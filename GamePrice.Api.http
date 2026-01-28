@@ -1,0 +1,6 @@
+@GamePrice.Api_HostAddress = http://localhost:5098
+
+GET {{GamePrice.Api_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
