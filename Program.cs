@@ -1,23 +1,15 @@
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
-
+// Adiciona serviços ao container
 builder.Services.AddControllers();
-// Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
-builder.Services.AddOpenApi();
+builder.Services.AddHttpClient(); // Necessário para o SearchController chamar o Python
 
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
-if (app.Environment.IsDevelopment())
-{
-    app.MapOpenApi();
-}
-
-app.UseHttpsRedirection();
-
+// Configura o pipeline HTTP
 app.UseAuthorization();
 
 app.MapControllers();
 
+// Roda a API na porta 5200 (conforme esperado pelo MVC)
 app.Run();
