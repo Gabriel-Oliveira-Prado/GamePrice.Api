@@ -2,7 +2,7 @@ var builder = WebApplication.CreateBuilder(args);
 
 // Adiciona serviços ao container
 builder.Services.AddControllers();
-builder.Services.AddHttpClient(); // Necessário para o SearchController chamar o Python
+builder.Services.AddHttpClient();
 
 var app = builder.Build();
 
@@ -11,5 +11,4 @@ app.UseAuthorization();
 
 app.MapControllers();
 
-// Roda a API na porta 5200 (conforme esperado pelo MVC)
 app.Run();
