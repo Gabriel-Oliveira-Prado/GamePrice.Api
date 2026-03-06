@@ -1,11 +1,12 @@
-FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
 WORKDIR /src
-COPY ["GamePrice.Api.csproj", "./"]
-RUN dotnet restore "GamePrice.Api.csproj"
+COPY ["GamePrice.Api/GamePrice.Api.csproj", "GamePrice.Api/"]
+RUN dotnet restore "GamePrice.Api/GamePrice.Api.csproj"
 COPY . .
+WORKDIR "/src/GamePrice.Api"
 RUN dotnet publish "GamePrice.Api.csproj" -c Release -o /app/publish
 
-FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS final
+FROM mcr.microsoft.com/dotnet/aspnet:9.0 AS final
 WORKDIR /app
 COPY --from=build /app/publish .
 

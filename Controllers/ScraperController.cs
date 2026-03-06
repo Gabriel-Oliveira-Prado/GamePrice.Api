@@ -7,10 +7,12 @@ using GamePrice.Api.DTOs;
 public class ScraperController : ControllerBase
 {
     private readonly HttpClient _http;
+    private readonly IConfiguration _configuration;
 
-    public ScraperController(HttpClient http)
+    public ScraperController(HttpClient http, IConfiguration configuration)
     {
         _http = http;
+        _configuration = configuration;
     }
 
     [HttpGet("price")]
@@ -21,8 +23,10 @@ public class ScraperController : ControllerBase
             
         try
         {
-            // Chama o Scraper Python
-            var pythonUrl = $"http://localhost:8000/scrape?url={Uri.EscapeDataString(gameName)}";
+            // Chama o Scraper Python lendo a URL da configuração
+            var baseUrl = _configuration["ApiSettings:ScraperApiUrl"] ?? "http://localhost:8000";
+            var pythonUrl = $"{baseUrl.TrimEnd('/')}/scrape?url={Uri.EscapeDataString(gameName)}";
+
             var data = await _http.GetFromJsonAsync<GamePriceDto>(pythonUrl);
 
             if (data == null)
