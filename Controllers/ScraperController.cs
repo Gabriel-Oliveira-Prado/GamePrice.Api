@@ -1,42 +1,36 @@
 using Microsoft.AspNetCore.Mvc;
-using System.Net.Http.Json;
-using GamePrice.Api.DTOs;
+using GamePrice.Api.Application.Interfaces;
 
-[ApiController]
-[Route("api/[controller]")]
-public class ScraperController : ControllerBase
+namespace GamePrice.Api.Controllers
 {
-    private readonly HttpClient _http;
-    private readonly IConfiguration _configuration;
-
-    public ScraperController(HttpClient http, IConfiguration configuration)
+    [ApiController]
+    [Route("api/[controller]")]
+    public class ScraperController : ControllerBase
     {
-        _http = http;
-        _configuration = configuration;
-    }
+        private readonly IScraperService _scraperService;
+        private readonly ILogger<ScraperController> _logger;
 
-    [HttpGet("price")]
-    public async Task<IActionResult> GetPrice([FromQuery] string gameName)
-    {
-        if (string.IsNullOrEmpty(gameName))
-            return BadRequest("Informe o nome do jogo");
-            
-        try
+        public ScraperController(IScraperService scraperService, ILogger<ScraperController> logger)
         {
-            // Chama o Scraper Python lendo a URL da configuração
-            var baseUrl = _configuration["ApiSettings:ScraperApiUrl"] ?? "http://localhost:8000";
-            var pythonUrl = $"{baseUrl.TrimEnd('/')}/scrape?url={Uri.EscapeDataString(gameName)}";
+            _scraperService = scraperService;
+            _logger = logger;
+        }
 
-            var data = await _http.GetFromJsonAsync<GamePriceDto>(pythonUrl);
+        [HttpGet("price")]
+        [ResponseCache(Duration = 300, VaryByQueryKeys = new[] { "gameName" })]
+        public async Task<IActionResult> GetPrice([FromQuery] string gameName)
+        {
+            if (string.IsNullOrWhiteSpace(gameName))
+                return BadRequest(new { error = "Informe o nome do jogo" });
 
-            if (data == null)
-                return NotFound("Jogo não encontrado");
+            _logger.LogInformation("Buscando preço para o jogo: {GameName}", gameName);
+
+            var data = await _scraperService.GetGamePriceAsync(gameName);
+
+            if (data is null)
+                return NotFound(new { error = "Jogo não encontrado" });
 
             return Ok(data);
-        }
-        catch
-        {
-            return StatusCode(500, "Erro ao buscar jogo no Scraper Python.");
         }
     }
 }
