@@ -44,17 +44,61 @@ namespace GamePrice.Api.Application.Services
 
             _logger.LogInformation("Chamando scraper Python em: {Url}", pythonUrl);
 
-            var data = await _http.GetFromJsonAsync<GamePriceDto>(pythonUrl);
+            var results = await _http.GetFromJsonAsync<Dictionary<string, PythonStoreResultDto>>(pythonUrl);
 
-            if (data is not null)
+            if (results == null || results.Count == 0)
+                return null;
+
+            GamePriceDto? bestGame = null;
+            decimal lowestPrice = decimal.MaxValue;
+
+            foreach (var kvp in results)
+            {
+                var storeName = kvp.Key;
+                var storeData = kvp.Value;
+
+                if (string.IsNullOrEmpty(storeData.Nome) || storeData.Erro != null)
+                    continue;
+
+                decimal currentPrice = ParsePrice(storeData.PrecoAtual);
+                
+                if (currentPrice < lowestPrice)
+                {
+                    lowestPrice = currentPrice;
+                    bestGame = new GamePriceDto
+                    {
+                        Title = storeData.Nome,
+                        Price = currentPrice == 0m ? "Grátis" : (storeData.PrecoAtual ?? "Indisponível"),
+                        Url = storeData.Link ?? "",
+                        Store = storeName
+                    };
+                }
+            }
+
+            if (bestGame != null)
             {
                 // Cachear resultado — tempo configurável via appsettings
                 var expirationMinutes = _configuration.GetValue<int>("Cache:DefaultExpirationMinutes", 10);
-                await _cache.SetAsync(cacheKey, data, TimeSpan.FromMinutes(expirationMinutes));
-                _logger.LogInformation("Resultado cacheado por {Minutes} minutos para: {GameName}", expirationMinutes, gameName);
+                await _cache.SetAsync(cacheKey, bestGame, TimeSpan.FromMinutes(expirationMinutes));
+                _logger.LogInformation("Resultado cacheado por {Minutes} minutos para: {GameName} na loja {Store}", expirationMinutes, gameName, bestGame.Store);
             }
 
-            return data;
+            return bestGame;
+        }
+
+        private decimal ParsePrice(string? priceStr)
+        {
+            if (string.IsNullOrWhiteSpace(priceStr)) return decimal.MaxValue;
+            var lower = priceStr.ToLowerInvariant();
+            if (lower.Contains("grátis") || lower.Contains("free") || lower.Contains("gratuito"))
+                return 0m;
+
+            var numericPart = priceStr.Replace("R$", "").Replace("BRL", "").Trim();
+            if (decimal.TryParse(numericPart, System.Globalization.NumberStyles.Any, new System.Globalization.CultureInfo("pt-BR"), out decimal result))
+            {
+                return result;
+            }
+            return decimal.MaxValue;
         }
     }
 }
