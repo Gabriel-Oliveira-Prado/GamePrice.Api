@@ -100,5 +100,33 @@ namespace GamePrice.Api.Application.Services
             }
             return decimal.MaxValue;
         }
+
+        public async Task<List<GameDealDto>> GetTopDealsAsync()
+        {
+            var cacheKey = "top_deals_grid";
+
+            var cached = await _cache.GetAsync<List<GameDealDto>>(cacheKey);
+            if (cached is not null)
+            {
+                _logger.LogInformation("Cache HIT para o grid de deals");
+                return cached;
+            }
+
+            _logger.LogInformation("Cache MISS para o grid de deals. Consultando scraper...");
+
+            var baseUrl = _configuration["ApiSettings:ScraperApiUrl"] ?? "http://localhost:8000";
+            var dealsUrl = $"{baseUrl.TrimEnd('/')}/deals";
+
+            var results = await _http.GetFromJsonAsync<List<GameDealDto>>(dealsUrl);
+
+            if (results != null && results.Count > 0)
+            {
+                var expirationMinutes = _configuration.GetValue<int>("Cache:DefaultExpirationMinutes", 10);
+                await _cache.SetAsync(cacheKey, results, TimeSpan.FromMinutes(expirationMinutes));
+                return results;
+            }
+
+            return new List<GameDealDto>();
+        }
     }
 }

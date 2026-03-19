@@ -32,5 +32,19 @@ namespace GamePrice.Api.Controllers
 
             return Ok(data);
         }
+
+        [HttpGet("deals")]
+        [ResponseCache(Duration = 60, Location = ResponseCacheLocation.Client)]
+        public async Task<IActionResult> GetDeals()
+        {
+            _logger.LogInformation("Requisitando os destaques de ofertas");
+
+            var data = await _scraperService.GetTopDealsAsync();
+
+            if (data == null || data.Count == 0)
+                return NotFound(new { error = "Nenhuma oferta encontrada" });
+
+            return Ok(data);
+        }
     }
 }
