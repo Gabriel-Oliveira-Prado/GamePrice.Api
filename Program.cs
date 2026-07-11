@@ -35,7 +35,13 @@ try
             options.JsonSerializerOptions.PropertyNameCaseInsensitive = true;
         });
 
-    // HttpClient para o ScraperService
+    // HttpClient para o ScraperService — com timeout de 180s para scraping com Selenium
+    builder.Services.AddHttpClient<IScraperService, ScraperService>(client =>
+    {
+        client.Timeout = TimeSpan.FromSeconds(180);
+    });
+
+    // HttpClient genérico para outros serviços
     builder.Services.AddHttpClient();
 
     // Memory Cache
@@ -44,8 +50,7 @@ try
     // Response Caching
     builder.Services.AddResponseCaching();
 
-    // DI — Application Services
-    builder.Services.AddScoped<IScraperService, ScraperService>();
+    // DI — Application Services (IScraperService registrado acima via AddHttpClient)
     builder.Services.AddScoped<ITokenService, TokenService>();
     builder.Services.AddSingleton<ICacheService, MemoryCacheService>();
 

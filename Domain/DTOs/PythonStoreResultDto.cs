@@ -4,6 +4,9 @@ namespace GamePrice.Api.Domain.DTOs
 {
     public class PythonStoreResultDto
     {
+        [JsonPropertyName("plataforma")]
+        public string? Plataforma { get; set; }
+
         [JsonPropertyName("nome")]
         public string? Nome { get; set; }
 
@@ -18,8 +21,6 @@ namespace GamePrice.Api.Domain.DTOs
 
         [JsonPropertyName("link")]
         public string? Link { get; set; }
-
-        [JsonPropertyName("erro")]
-        public string? Erro { get; set; }
     }
 }
+

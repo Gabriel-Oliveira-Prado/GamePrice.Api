@@ -33,6 +33,23 @@ namespace GamePrice.Api.Controllers
             return Ok(data);
         }
 
+        [HttpGet("prices")]
+        [ResponseCache(Duration = 300, VaryByQueryKeys = new[] { "gameName" })]
+        public async Task<IActionResult> GetPrices([FromQuery] string gameName)
+        {
+            if (string.IsNullOrWhiteSpace(gameName))
+                return BadRequest(new { error = "Informe o nome do jogo" });
+
+            _logger.LogInformation("Buscando todos os preços para o jogo: {GameName}", gameName);
+
+            var data = await _scraperService.GetGamePricesAsync(gameName);
+
+            if (data is null || data.Count == 0)
+                return NotFound(new { error = "Jogo não encontrado" });
+
+            return Ok(data);
+        }
+
         [HttpGet("deals")]
         [ResponseCache(Duration = 60, Location = ResponseCacheLocation.Client)]
         public async Task<IActionResult> GetDeals()
@@ -43,6 +60,20 @@ namespace GamePrice.Api.Controllers
 
             if (data == null || data.Count == 0)
                 return NotFound(new { error = "Nenhuma oferta encontrada" });
+
+            return Ok(data);
+        }
+
+        [HttpGet("free-games")]
+        [ResponseCache(Duration = 60, Location = ResponseCacheLocation.Client)]
+        public async Task<IActionResult> GetFreeGames()
+        {
+            _logger.LogInformation("Requisitando os jogos gratuitos");
+
+            var data = await _scraperService.GetFreeGamesAsync();
+
+            if (data == null || data.Count == 0)
+                return NotFound(new { error = "Nenhum jogo gratuito encontrado" });
 
             return Ok(data);
         }
