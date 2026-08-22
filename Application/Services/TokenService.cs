@@ -16,7 +16,7 @@ namespace GamePrice.Api.Application.Services
             _configuration = configuration;
         }
 
-        public string GenerateToken(string email, string name)
+        public string GenerateToken(Guid userId, string email, string name)
         {
             var jwtKey = _configuration["Jwt:Key"] 
                 ?? throw new InvalidOperationException("JWT Key não configurada no appsettings.json");
@@ -29,6 +29,7 @@ namespace GamePrice.Api.Application.Services
 
             var claims = new[]
             {
+                new Claim(ClaimTypes.NameIdentifier, userId.ToString()),
                 new Claim(ClaimTypes.Email, email),
                 new Claim(ClaimTypes.Name, name),
                 new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),

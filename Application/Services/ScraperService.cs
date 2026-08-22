@@ -11,17 +11,20 @@ namespace GamePrice.Api.Application.Services
     {
         private readonly HttpClient _http;
         private readonly ICacheService _cache;
+        private readonly IGameCatalogRepository _catalog;
         private readonly IConfiguration _configuration;
         private readonly ILogger<ScraperService> _logger;
 
         public ScraperService(
             HttpClient http,
             ICacheService cache,
+            IGameCatalogRepository catalog,
             IConfiguration configuration,
             ILogger<ScraperService> logger)
         {
             _http = http;
             _cache = cache;
+            _catalog = catalog;
             _configuration = configuration;
             _logger = logger;
         }
@@ -63,7 +66,7 @@ namespace GamePrice.Api.Application.Services
 
                 foreach (var storeData in results)
                 {
-                    if (string.IsNullOrEmpty(storeData.Nome))
+                    if (string.IsNullOrEmpty(storeData.Nome) || !HasComparablePrice(storeData))
                         continue;
 
                     decimal currentPrice = ParsePrice(storeData.PrecoAtual);
@@ -89,6 +92,8 @@ namespace GamePrice.Api.Application.Services
 
                 if (bestGame != null)
                 {
+                    var comparableResults = results.Where(HasComparablePrice).ToList();
+                    await PersistSearchResultsAsync(gameName, comparableResults);
                     var expirationMinutes = _configuration.GetValue<int>("Cache:DefaultExpirationMinutes", 10);
                     await _cache.SetAsync(cacheKey, bestGame, TimeSpan.FromMinutes(expirationMinutes));
                     _logger.LogInformation("Melhor preço: {Store} por {Price} — cacheado por {Minutes}min para: {GameName}",
@@ -116,12 +121,21 @@ namespace GamePrice.Api.Application.Services
             if (lower.Contains("grátis") || lower.Contains("free") || lower.Contains("gratuito"))
                 return 0m;
 
-            var numericPart = priceStr.Replace("R$", "").Replace("BRL", "").Trim();
+            var numericPart = System.Text.RegularExpressions.Regex.Replace(
+                priceStr,
+                @"[^0-9,.-]",
+                string.Empty);
             if (decimal.TryParse(numericPart, System.Globalization.NumberStyles.Any, new System.Globalization.CultureInfo("pt-BR"), out decimal result))
             {
                 return result;
             }
             return decimal.MaxValue;
+        }
+
+        private bool HasComparablePrice(PythonStoreResultDto result)
+        {
+            var currentPrice = ParsePrice(result.PrecoAtual);
+            return currentPrice != decimal.MaxValue;
         }
 
         public async Task<List<PythonStoreResultDto>?> GetGamePricesAsync(string gameName)
@@ -132,7 +146,17 @@ namespace GamePrice.Api.Application.Services
             if (cached is not null)
             {
                 _logger.LogInformation("Cache HIT para a lista de preços do jogo: {GameName}", gameName);
+                await PersistSearchResultsAsync(gameName, cached);
                 return cached;
+            }
+
+            var persistedOffers = await _catalog.GetOffersByTitleAsync(gameName);
+            if (persistedOffers.Any(result => ParsePrice(result.PrecoAtual) == 0m))
+            {
+                _logger.LogInformation("Jogo gratuito encontrado no catalogo local: {GameName}", gameName);
+                var expirationMinutes = _configuration.GetValue<int>("Cache:DefaultExpirationMinutes", 10);
+                await _cache.SetAsync(cacheKey, persistedOffers, TimeSpan.FromMinutes(expirationMinutes));
+                return persistedOffers;
             }
 
             _logger.LogInformation("Cache MISS para a lista de preços do jogo: {GameName}. Consultando scraper...", gameName);
@@ -154,11 +178,21 @@ namespace GamePrice.Api.Application.Services
 
                 _logger.LogInformation("Scraper retornou {Count} resultado(s) para: {GameName}", results.Count, gameName);
 
-                // Ordenar por menor preço atual
-                results = results.OrderBy(r => ParsePrice(r.PrecoAtual)).ToList();
+                // Mantem apenas precos de compra verificaveis e ordena pelo menor valor.
+                results = results
+                    .Where(HasComparablePrice)
+                    .OrderBy(r => ParsePrice(r.PrecoAtual))
+                    .ToList();
+
+                if (results.Count == 0)
+                {
+                    _logger.LogWarning("Nenhum preco de compra comparavel para: {GameName}", gameName);
+                    return null;
+                }
 
                 var expirationMinutes = _configuration.GetValue<int>("Cache:DefaultExpirationMinutes", 10);
                 await _cache.SetAsync(cacheKey, results, TimeSpan.FromMinutes(expirationMinutes));
+                await PersistSearchResultsAsync(gameName, results);
 
                 return results;
             }
@@ -174,18 +208,139 @@ namespace GamePrice.Api.Application.Services
             }
         }
 
-        public async Task<List<GameDealDto>> GetTopDealsAsync()
+        public async Task<List<GameSearchSuggestionDto>> SearchGamesAsync(string query, int limit = 8)
+        {
+            var safeLimit = Math.Clamp(limit, 1, 12);
+            var normalizedQuery = NormalizeSearchValue(query);
+            if (normalizedQuery.Length < 2)
+                return new List<GameSearchSuggestionDto>();
+
+            var cacheKey = $"game_search_{normalizedQuery}_{safeLimit}";
+            var cached = await _cache.GetAsync<List<GameSearchSuggestionDto>>(cacheKey);
+            if (cached is not null)
+                return cached;
+
+            var localResults = await _catalog.SearchGamesAsync(query, safeLimit);
+            var remoteResults = new List<GameSearchSuggestionDto>();
+            var baseUrl = _configuration["ApiSettings:ScraperApiUrl"] ?? "http://localhost:8000";
+            var searchUrl = $"{baseUrl.TrimEnd('/')}/search?query={Uri.EscapeDataString(query)}&limit={safeLimit}";
+
+            try
+            {
+                remoteResults = await _http.GetFromJsonAsync<List<GameSearchSuggestionDto>>(searchUrl)
+                    ?? new List<GameSearchSuggestionDto>();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Pesquisa remota de catalogo indisponivel para: {Query}", query);
+            }
+
+            var discoveredOffers = remoteResults
+                .Where(result => !string.IsNullOrWhiteSpace(result.Title)
+                    && !string.IsNullOrWhiteSpace(result.Price)
+                    && !string.IsNullOrWhiteSpace(result.Link))
+                .Select((result, index) => new GameDealDto
+                {
+                    Id = index + 1,
+                    Title = result.Title,
+                    Price = result.IsFree ? "Grátis" : result.Price,
+                    Store = result.Store,
+                    Platform = MapStoreToPlatform(result.Store),
+                    Image = result.Image,
+                    Link = result.Link
+                })
+                .ToList();
+            if (discoveredOffers.Count > 0)
+                await PersistDealsAsync(discoveredOffers, "catalog-search");
+
+            var merged = new Dictionary<string, GameSearchSuggestionDto>(StringComparer.OrdinalIgnoreCase);
+            foreach (var result in localResults.Concat(remoteResults))
+            {
+                var key = NormalizeSearchValue(result.Title);
+                if (string.IsNullOrWhiteSpace(key))
+                    continue;
+
+                if (!merged.TryGetValue(key, out var existing))
+                {
+                    merged[key] = result;
+                    continue;
+                }
+
+                existing.IsFree |= result.IsFree;
+                existing.OfferCount = Math.Max(existing.OfferCount, result.OfferCount);
+                if (string.IsNullOrWhiteSpace(existing.Price) || result.IsFree)
+                    existing.Price = result.Price;
+                if (string.IsNullOrWhiteSpace(existing.Store) || result.IsFree)
+                    existing.Store = result.Store;
+                if (string.IsNullOrWhiteSpace(existing.Image))
+                    existing.Image = result.Image;
+                if (string.IsNullOrWhiteSpace(existing.Link))
+                    existing.Link = result.Link;
+            }
+
+            var results = merged.Values
+                .OrderBy(result => NormalizeSearchValue(result.Title).StartsWith(normalizedQuery) ? 0 : 1)
+                .ThenByDescending(result => result.OfferCount)
+                .ThenBy(result => result.IsFree ? 0 : 1)
+                .ThenBy(result => result.Title)
+                .Take(safeLimit)
+                .ToList();
+
+            await _cache.SetAsync(cacheKey, results, TimeSpan.FromMinutes(5));
+            return results;
+        }
+
+        public async Task<List<GameDealDto>> GetTopDealsAsync(bool forceRefresh = false)
         {
             var cacheKey = "top_deals_grid";
 
             var cached = await _cache.GetAsync<List<GameDealDto>>(cacheKey);
-            if (cached is not null)
+            if (cached is not null && !forceRefresh)
             {
                 _logger.LogInformation("Cache HIT para o grid de deals");
                 return cached;
             }
 
-            _logger.LogInformation("Cache MISS para o grid de deals. Buscando preços reais dos jogos em alta...");
+            _logger.LogInformation(
+                forceRefresh
+                    ? "Atualizando o grid de deals em segundo plano..."
+                    : "Cache MISS para o grid de deals. Buscando preços reais dos jogos em alta...");
+
+            var baseUrl = _configuration["ApiSettings:ScraperApiUrl"] ?? "http://localhost:8000";
+            var dealsUrl = $"{baseUrl.TrimEnd('/')}/deals";
+
+            try
+            {
+                var directDeals = await _http.GetFromJsonAsync<List<GameDealDto>>(dealsUrl);
+                if (directDeals is { Count: > 0 })
+                {
+                    await PersistDealsAsync(directDeals, "steam-featured");
+                    var directDealsExpiration = _configuration.GetValue<int>("Cache:DealsExpirationMinutes", 60);
+                    await _cache.SetAsync(cacheKey, directDeals, TimeSpan.FromMinutes(directDealsExpiration));
+                    return directDeals;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Endpoint leve de deals indisponível. Consultando o fallback local.");
+            }
+
+            if (cached is { Count: > 0 })
+            {
+                _logger.LogWarning("A atualizacao de ofertas falhou. Mantendo o ultimo grid valido.");
+                return cached;
+            }
+
+            var persistedDeals = await _catalog.GetLatestDealsAsync();
+            if (persistedDeals.Count > 0)
+            {
+                _logger.LogWarning(
+                    "A atualizacao remota falhou. Recuperando {Count} oferta(s) recentes do SQLite.",
+                    persistedDeals.Count);
+                var persistedExpiration = _configuration.GetValue<int>("Cache:DealsExpirationMinutes", 60);
+                await _cache.SetAsync(cacheKey, persistedDeals, TimeSpan.FromMinutes(persistedExpiration));
+                return persistedDeals;
+            }
 
             var trendingGames = new List<string>
             {
@@ -215,13 +370,13 @@ namespace GamePrice.Api.Application.Services
                             decimal currentPrice = ParsePrice(best.PrecoAtual);
                             decimal originalPrice = ParsePrice(best.PrecoOriginal);
 
-                            // Trata preço original igual a zero ou indisponível
+                            // Sem preco original confiavel, nao fabrica desconto.
                             if (originalPrice == decimal.MaxValue || originalPrice <= currentPrice)
                             {
-                                originalPrice = currentPrice * 1.5m; // Simula preço sem desconto se não retornar
+                                originalPrice = currentPrice;
                             }
 
-                            var discount = "-0%";
+                            var discount = "";
                             if (originalPrice > currentPrice && originalPrice > 0)
                             {
                                 var pct = Math.Round((1 - (currentPrice / originalPrice)) * 100);
@@ -241,7 +396,8 @@ namespace GamePrice.Api.Application.Services
                                 Discount = discount,
                                 Platform = MapStoreToPlatform(best.Plataforma),
                                 Store = best.Plataforma ?? "Desconhecida",
-                                Image = best.Imagem ?? ""
+                                Image = best.Imagem ?? "",
+                                Link = best.Link ?? ""
                             };
                         }
                     }
@@ -260,20 +416,20 @@ namespace GamePrice.Api.Application.Services
                 _logger.LogError(ex, "Erro no processamento paralelo de ofertas em destaque");
             }
 
-            // Fallback caso a busca real falhe por completo ou retorne vazia
             if (dealsList.Count == 0)
             {
-                _logger.LogWarning("Retornando fallback estático para ofertas em destaque.");
-                dealsList = GetFallbackDeals();
+                _logger.LogWarning("Nenhuma oferta real disponivel no momento.");
             }
 
             if (dealsList.Count > 0)
             {
+                await PersistDealsAsync(dealsList, "comparison-fallback");
                 var expirationMinutes = _configuration.GetValue<int>("Cache:DealsExpirationMinutes", 60);
                 await _cache.SetAsync(cacheKey, dealsList, TimeSpan.FromMinutes(expirationMinutes));
+                return dealsList;
             }
 
-            return dealsList;
+            return new List<GameDealDto>();
         }
 
         private string MapStoreToPlatform(string? store)
@@ -286,16 +442,8 @@ namespace GamePrice.Api.Application.Services
             return "pc";
         }
 
-        private List<GameDealDto> GetFallbackDeals()
-        {
-            return new List<GameDealDto>
-            {
-                new() { Id = 1, Title = "Elden Ring", Price = "149,90", OldPrice = "229,90", Discount = "-35%", Platform = "pc", Store = "Steam", Image = "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/1245620/header.jpg" },
-                new() { Id = 2, Title = "Cyberpunk 2077", Price = "99,90", OldPrice = "199,90", Discount = "-50%", Platform = "pc", Store = "Steam", Image = "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/1091500/header.jpg" },
-                new() { Id = 3, Title = "Grand Theft Auto V", Price = "37,42", OldPrice = "149,70", Discount = "-75%", Platform = "pc", Store = "Epic Games", Image = "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/271590/header.jpg" },
-                new() { Id = 4, Title = "Red Dead Redemption 2", Price = "89,90", OldPrice = "299,90", Discount = "-70%", Platform = "pc", Store = "Epic Games", Image = "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/1174180/header.jpg" }
-            };
-        }
+        private static string NormalizeSearchValue(string value) =>
+            new(value.Where(char.IsLetterOrDigit).Select(char.ToUpperInvariant).ToArray());
 
         public async Task<List<GameDealDto>> GetFreeGamesAsync()
         {
@@ -319,6 +467,7 @@ namespace GamePrice.Api.Application.Services
 
                 if (results != null && results.Count > 0)
                 {
+                    await PersistDealsAsync(results, "free-games-feed");
                     var expirationMinutes = _configuration.GetValue<int>("Cache:DefaultExpirationMinutes", 10);
                     await _cache.SetAsync(cacheKey, results, TimeSpan.FromMinutes(expirationMinutes));
                     return results;
@@ -329,14 +478,33 @@ namespace GamePrice.Api.Application.Services
                 _logger.LogError(ex, "Erro ao buscar jogos gratuitos no scraper Python");
             }
 
-            // Fallback caso a API esteja fora
-            return new List<GameDealDto>
+            return new List<GameDealDto>();
+        }
+
+        private async Task PersistDealsAsync(IReadOnlyCollection<GameDealDto> deals, string source)
+        {
+            try
             {
-                new() { Id = 1, Title = "Counter-Strike 2", Price = "Grátis", OldPrice = "Gratuito", Discount = "F2P", Platform = "pc", Store = "Steam", Image = "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/730/capsule_616x353.jpg" },
-                new() { Id = 2, Title = "Apex Legends", Price = "Grátis", OldPrice = "Gratuito", Discount = "F2P", Platform = "pc", Store = "Steam", Image = "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/1172470/capsule_616x353.jpg" },
-                new() { Id = 3, Title = "PUBG: BATTLEGROUNDS", Price = "Grátis", OldPrice = "Gratuito", Discount = "F2P", Platform = "pc", Store = "Steam", Image = "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/578080/capsule_616x353.jpg" },
-                new() { Id = 4, Title = "Team Fortress 2", Price = "Grátis", OldPrice = "Gratuito", Discount = "F2P", Platform = "pc", Store = "Steam", Image = "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/440/capsule_616x353.jpg" }
-            };
+                await _catalog.SaveDealsAsync(deals, source);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Falha ao persistir ofertas do feed {Source}", source);
+            }
+        }
+
+        private async Task PersistSearchResultsAsync(
+            string query,
+            IReadOnlyCollection<PythonStoreResultDto> results)
+        {
+            try
+            {
+                await _catalog.SaveSearchResultsAsync(query, results);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Falha ao persistir resultados da busca {Query}", query);
+            }
         }
     }
 }

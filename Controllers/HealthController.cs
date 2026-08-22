@@ -1,5 +1,7 @@
 using System.Diagnostics;
+using GamePrice.Api.Infrastructure.Data;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 
 namespace GamePrice.Api.Controllers
 {
@@ -7,19 +9,44 @@ namespace GamePrice.Api.Controllers
     [Route("api/[controller]")]
     public class HealthController : ControllerBase
     {
-        private static readonly DateTime _startTime = DateTime.UtcNow;
+        private readonly GamePriceDbContext _database;
+
+        public HealthController(GamePriceDbContext database)
+        {
+            _database = database;
+        }
 
         [HttpGet]
-        public IActionResult Get()
+        public async Task<IActionResult> Get(CancellationToken cancellationToken)
         {
             var memoryUsed = GC.GetTotalMemory(false) / (1024.0 * 1024.0);
             var process = Process.GetCurrentProcess();
             var systemMemory = process.PrivateMemorySize64 / (1024.0 * 1024.0);
-            var uptime = DateTime.UtcNow - _startTime;
+            var uptime = DateTime.UtcNow - process.StartTime.ToUniversalTime();
+            if (uptime < TimeSpan.Zero)
+                uptime = TimeSpan.Zero;
 
-            return Ok(new
+            var databaseOnline = await _database.Database.CanConnectAsync(cancellationToken);
+            var database = new Dictionary<string, object?>
             {
-                status = "Healthy",
+                ["status"] = databaseOnline ? "Online" : "Offline",
+                ["provider"] = "SQLite"
+            };
+
+            if (databaseOnline)
+            {
+                database["users"] = await _database.Users.CountAsync(cancellationToken);
+                database["games"] = await _database.Games.CountAsync(cancellationToken);
+                database["stores"] = await _database.Stores.CountAsync(cancellationToken);
+                database["offers"] = await _database.Offers.CountAsync(cancellationToken);
+                database["priceSnapshots"] = await _database.PriceSnapshots.CountAsync(cancellationToken);
+                database["searches"] = await _database.SearchHistory.CountAsync(cancellationToken);
+                database["loginAttempts"] = await _database.LoginAudits.CountAsync(cancellationToken);
+            }
+
+            var response = new
+            {
+                status = databaseOnline ? "Healthy" : "Degraded",
                 service = "GamePrice.Api",
                 uptime = $"{uptime.Days}d {uptime.Hours}h {uptime.Minutes}m {uptime.Seconds}s",
                 uptimeMs = uptime.TotalMilliseconds,
@@ -28,10 +55,12 @@ namespace GamePrice.Api.Controllers
                     allocatedMb = Math.Round(memoryUsed, 2),
                     systemPrivateMb = Math.Round(systemMemory, 2)
                 },
-                database = "Online (In-Memory Repository)",
+                database,
                 crawlers = new[] { "Steam", "Epic Games", "GOG", "Nuuvem", "Xbox", "PlayStation", "Nintendo" },
                 timestamp = DateTime.UtcNow
-            });
+            };
+
+            return databaseOnline ? Ok(response) : StatusCode(StatusCodes.Status503ServiceUnavailable, response);
         }
     }
 }

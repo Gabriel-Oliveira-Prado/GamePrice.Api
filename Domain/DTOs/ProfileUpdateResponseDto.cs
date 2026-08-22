@@ -1,10 +1,9 @@
 namespace GamePrice.Api.Domain.DTOs
 {
-    public class TokenResponseDto
+    public class ProfileUpdateResponseDto
     {
+        public UserProfileDto Profile { get; set; } = new();
         public string Token { get; set; } = string.Empty;
         public DateTime ExpiresAt { get; set; }
-        public string Name { get; set; } = string.Empty;
-        public string Email { get; set; } = string.Empty;
     }
 }

@@ -1,9 +1,11 @@
 using System.Text;
 using GamePrice.Api.Application.Interfaces;
 using GamePrice.Api.Application.Services;
+using GamePrice.Api.Infrastructure.Data;
 using GamePrice.Api.Infrastructure.Repositories;
 using GamePrice.Api.Middleware;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Serilog;
 
@@ -47,18 +49,25 @@ try
     // Memory Cache
     builder.Services.AddMemoryCache();
 
+    var databaseConnection = builder.Configuration.GetConnectionString("GamePrice")
+        ?? "Data Source=Data/gameprice.db;Cache=Shared;Foreign Keys=True";
+    Directory.CreateDirectory(Path.Combine(builder.Environment.ContentRootPath, "Data"));
+    builder.Services.AddDbContext<GamePriceDbContext>(options =>
+        options.UseSqlite(databaseConnection));
+
     // Response Caching
     builder.Services.AddResponseCaching();
 
     // DI — Application Services (IScraperService registrado acima via AddHttpClient)
     builder.Services.AddScoped<ITokenService, TokenService>();
     builder.Services.AddSingleton<ICacheService, MemoryCacheService>();
+    builder.Services.AddHostedService<DealsRefreshBackgroundService>();
+    builder.Services.AddHostedService<DatabaseCleanupBackgroundService>();
 
     // DI — Infrastructure Repositories
-    builder.Services.AddSingleton<IUserRepository, InMemoryUserRepository>();
-
-    // DI — Infrastructure Data
-    builder.Services.AddScoped<GamePrice.Api.Infrastructure.DbConnection>();
+    builder.Services.AddScoped<IUserRepository, SqliteUserRepository>();
+    builder.Services.AddScoped<IGameCatalogRepository, SqliteGameCatalogRepository>();
+    builder.Services.AddScoped<IWishlistRepository, SqliteWishlistRepository>();
 
     // JWT Authentication
     var jwtKey = builder.Configuration["Jwt:Key"]
@@ -146,6 +155,15 @@ try
     });
 
     var app = builder.Build();
+
+    await using (var scope = app.Services.CreateAsyncScope())
+    {
+        var database = scope.ServiceProvider.GetRequiredService<GamePriceDbContext>();
+        var databaseLogger = scope.ServiceProvider
+            .GetRequiredService<ILoggerFactory>()
+            .CreateLogger("DatabaseInitializer");
+        await DatabaseInitializer.InitializeAsync(database, databaseLogger);
+    }
 
     // === Pipeline HTTP ===
 

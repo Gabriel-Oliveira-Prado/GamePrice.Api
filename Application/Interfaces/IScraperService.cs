@@ -6,7 +6,8 @@ namespace GamePrice.Api.Application.Interfaces
     {
         Task<GamePriceDto?> GetGamePriceAsync(string gameName);
         Task<List<PythonStoreResultDto>?> GetGamePricesAsync(string gameName);
-        Task<List<GameDealDto>> GetTopDealsAsync();
+        Task<List<GameSearchSuggestionDto>> SearchGamesAsync(string query, int limit = 8);
+        Task<List<GameDealDto>> GetTopDealsAsync(bool forceRefresh = false);
         Task<List<GameDealDto>> GetFreeGamesAsync();
     }
 }

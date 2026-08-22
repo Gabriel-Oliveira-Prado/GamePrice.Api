@@ -1,6 +1,8 @@
 using GamePrice.Api.Application.Interfaces;
 using GamePrice.Api.Domain.DTOs;
 using Microsoft.AspNetCore.Mvc;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace GamePrice.Api.Controllers
 {
@@ -26,17 +28,36 @@ namespace GamePrice.Api.Controllers
         }
 
         [HttpPost("login")]
-        public IActionResult Login([FromBody] LoginRequestDto request)
+        public async Task<IActionResult> Login([FromBody] LoginRequestDto request, CancellationToken cancellationToken)
         {
             if (!ModelState.IsValid)
                 return BadRequest(ModelState);
 
-            var user = _userRepository.Authenticate(request.Email, request.Password);
+            var user = await _userRepository.AuthenticateAsync(request.Email, request.Password, cancellationToken);
 
             if (user is null)
+            {
+                await _userRepository.RecordLoginAttemptAsync(
+                    null,
+                    request.Email,
+                    false,
+                    "invalid_credentials",
+                    GetIpAddressHash(),
+                    Request.Headers.UserAgent.ToString(),
+                    cancellationToken);
                 return Unauthorized(new { error = "Email ou senha inválidos" });
+            }
 
-            var token = _tokenService.GenerateToken(user.Email, user.Name);
+            await _userRepository.RecordLoginAttemptAsync(
+                user.Id,
+                user.Email,
+                true,
+                string.Empty,
+                GetIpAddressHash(),
+                Request.Headers.UserAgent.ToString(),
+                cancellationToken);
+
+            var token = _tokenService.GenerateToken(user.Id, user.Email, user.Name);
             var expirationMinutes = _configuration.GetValue<int>("Jwt:ExpirationMinutes", 60);
             var expiresAt = DateTime.UtcNow.AddMinutes(expirationMinutes);
 
@@ -55,20 +76,26 @@ namespace GamePrice.Api.Controllers
             return Ok(new TokenResponseDto
             {
                 Token = token,
-                ExpiresAt = expiresAt
+                ExpiresAt = expiresAt,
+                Name = user.Name,
+                Email = user.Email
             });
         }
 
         [HttpPost("register")]
-        public IActionResult Register([FromBody] RegisterRequestDto request)
+        public async Task<IActionResult> Register([FromBody] RegisterRequestDto request, CancellationToken cancellationToken)
         {
             if (!ModelState.IsValid)
                 return BadRequest(ModelState);
 
-            if (_userRepository.EmailExists(request.Email))
+            if (await _userRepository.EmailExistsAsync(request.Email, cancellationToken))
                 return Conflict(new { error = "Este email já está cadastrado" });
 
-            var success = _userRepository.Register(request.Name, request.Email, request.Password);
+            var success = await _userRepository.RegisterAsync(
+                request.Name,
+                request.Email,
+                request.Password,
+                cancellationToken);
 
             if (!success)
                 return StatusCode(500, new { error = "Erro ao registrar usuário" });
@@ -93,6 +120,15 @@ namespace GamePrice.Api.Controllers
             _logger.LogInformation("Logout realizado");
 
             return Ok(new { message = "Logout realizado com sucesso" });
+        }
+
+        private string GetIpAddressHash()
+        {
+            var address = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+            var salt = _configuration["Security:AuditSalt"]
+                ?? _configuration["Jwt:Key"]
+                ?? "GamePrice";
+            return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{salt}:{address}")));
         }
     }
 }

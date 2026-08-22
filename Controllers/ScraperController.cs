@@ -50,6 +50,17 @@ namespace GamePrice.Api.Controllers
             return Ok(data);
         }
 
+        [HttpGet("search")]
+        [ResponseCache(Duration = 300, VaryByQueryKeys = new[] { "query", "limit" })]
+        public async Task<IActionResult> SearchGames([FromQuery] string query, [FromQuery] int limit = 8)
+        {
+            if (string.IsNullOrWhiteSpace(query) || query.Trim().Length < 2)
+                return Ok(Array.Empty<object>());
+
+            var data = await _scraperService.SearchGamesAsync(query.Trim(), Math.Clamp(limit, 1, 12));
+            return Ok(data);
+        }
+
         [HttpGet("deals")]
         [ResponseCache(Duration = 60, Location = ResponseCacheLocation.Client)]
         public async Task<IActionResult> GetDeals()

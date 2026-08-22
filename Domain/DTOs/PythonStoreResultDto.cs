@@ -19,8 +19,10 @@ namespace GamePrice.Api.Domain.DTOs
         [JsonPropertyName("imagem")]
         public string? Imagem { get; set; }
 
+        [JsonPropertyName("descricao")]
+        public string? Descricao { get; set; }
+
         [JsonPropertyName("link")]
         public string? Link { get; set; }
     }
 }
-

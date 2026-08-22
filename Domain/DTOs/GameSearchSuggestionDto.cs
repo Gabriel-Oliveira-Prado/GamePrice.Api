@@ -2,31 +2,25 @@ using System.Text.Json.Serialization;
 
 namespace GamePrice.Api.Domain.DTOs
 {
-    public class GameDealDto
+    public class GameSearchSuggestionDto
     {
-        [JsonPropertyName("id")]
-        public int Id { get; set; }
-        
         [JsonPropertyName("title")]
         public string Title { get; set; } = string.Empty;
 
         [JsonPropertyName("price")]
         public string Price { get; set; } = string.Empty;
 
-        [JsonPropertyName("oldPrice")]
-        public string OldPrice { get; set; } = string.Empty;
-
-        [JsonPropertyName("discount")]
-        public string Discount { get; set; } = string.Empty;
-
-        [JsonPropertyName("platform")]
-        public string Platform { get; set; } = string.Empty;
-
         [JsonPropertyName("store")]
         public string Store { get; set; } = string.Empty;
 
         [JsonPropertyName("image")]
         public string Image { get; set; } = string.Empty;
+
+        [JsonPropertyName("isFree")]
+        public bool IsFree { get; set; }
+
+        [JsonPropertyName("offerCount")]
+        public int OfferCount { get; set; }
 
         [JsonPropertyName("link")]
         public string Link { get; set; } = string.Empty;
